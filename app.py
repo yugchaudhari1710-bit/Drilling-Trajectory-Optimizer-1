@@ -2,13 +2,25 @@ import math
 import random
 import pandas as pd
 import matplotlib.pyplot as plt
+import streamlit as st
 
-# ---------------- USER INPUT ----------------
-# Change values here easily
-surface = (0, 0, 0)              # (North, East, TVD)
-target = (1200, 800, 2500)
+st.title("Drilling Trajectory Visualization")
 
-# ---------------- TRAJECTORY FUNCTION ----------------
+# -------- USER INPUT --------
+st.sidebar.header("Input Coordinates")
+
+Ns = st.sidebar.number_input("Surface Northing", value=0.0)
+Es = st.sidebar.number_input("Surface Easting", value=0.0)
+Zs = st.sidebar.number_input("Surface TVD", value=0.0)
+
+Nt = st.sidebar.number_input("Target Northing", value=1200.0)
+Et = st.sidebar.number_input("Target Easting", value=800.0)
+Zt = st.sidebar.number_input("Target TVD", value=2500.0)
+
+surface = (Ns, Es, Zs)
+target = (Nt, Et, Zt)
+
+# -------- TRAJECTORY FUNCTION --------
 def generate_well_trajectory(surface, target, step=50):
     Ns, Es, Zs = surface
     Nt, Et, Zt = target
@@ -16,7 +28,6 @@ def generate_well_trajectory(surface, target, step=50):
     N, E, Z = Ns, Es, Zs
     inclination = 0
     MD = 0
-
     data = []
 
     while Z < Zt:
@@ -29,14 +40,11 @@ def generate_well_trajectory(surface, target, step=50):
         ))
         azimuth = math.degrees(math.atan2(dE, dN))
 
-        # Build control
         build_rate = 1.5
         if inclination < target_inc:
             inclination += min(build_rate, target_inc - inclination)
 
-        # Subsurface uncertainty
         inclination += random.uniform(-2, 2)
-
         inclination = max(0, min(85, inclination))
 
         inc_rad = math.radians(inclination)
@@ -45,11 +53,8 @@ def generate_well_trajectory(surface, target, step=50):
         dZ_step = step * math.cos(inc_rad)
         dH_step = step * math.sin(inc_rad)
 
-        dN_step = dH_step * math.cos(az_rad)
-        dE_step = dH_step * math.sin(az_rad)
-
-        N += dN_step
-        E += dE_step
+        N += dH_step * math.cos(az_rad)
+        E += dH_step * math.sin(az_rad)
         Z += dZ_step
         MD += step
 
@@ -68,83 +73,55 @@ def generate_well_trajectory(surface, target, step=50):
     return pd.DataFrame(data)
 
 
-# ---------------- GENERATE ----------------
-df_actual = generate_well_trajectory(surface, target)
+# -------- RUN BUTTON --------
+if st.button("Generate Trajectory"):
 
-# ---------------- SECTION IDENTIFICATION ----------------
-sections = []
+    df = generate_well_trajectory(surface, target)
 
-for i in range(1, len(df_actual)):
-    inc_prev = df_actual.loc[i-1, "Inclination"]
-    inc_curr = df_actual.loc[i, "Inclination"]
+    # Section classification
+    sections = []
+    for i in range(1, len(df)):
+        diff = df.loc[i, "Inclination"] - df.loc[i-1, "Inclination"]
 
-    diff = inc_curr - inc_prev
+        if df.loc[i, "Inclination"] < 2:
+            section = "Vertical"
+        elif diff > 0.2:
+            section = "Build"
+        elif diff < -0.2:
+            section = "Drop"
+        else:
+            section = "Hold"
 
-    if inc_curr < 2:
-        section = "Vertical"
-    elif diff > 0.2:
-        section = "Build"
-    elif diff < -0.2:
-        section = "Drop"
-    else:
-        section = "Hold"
+        sections.append(section)
 
-    sections.append(section)
+    sections.insert(0, "Vertical")
+    df["Section"] = sections
 
-sections.insert(0, "Vertical")
-df_actual["Section"] = sections
+    # Plot
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
 
-# ---------------- IDEAL PATH ----------------
-def planned_path(surface, target, steps=50):
-    Ns, Es, Zs = surface
-    Nt, Et, Zt = target
+    color_map = {
+        "Vertical": "blue",
+        "Build": "orange",
+        "Hold": "green",
+        "Drop": "red"
+    }
 
-    N_vals, E_vals, Z_vals = [], [], []
+    for sec in df["Section"].unique():
+        subset = df[df["Section"] == sec]
+        ax.plot(subset["Northing"], subset["Easting"], subset["TVD"],
+                label=sec, color=color_map[sec])
 
-    for i in range(steps):
-        frac = i / (steps - 1)
-        N_vals.append(Ns + frac * (Nt - Ns))
-        E_vals.append(Es + frac * (Et - Es))
-        Z_vals.append(Zs + frac * (Zt - Zs))
+    ax.set_xlabel("Northing")
+    ax.set_ylabel("Easting")
+    ax.set_zlabel("TVD")
+    ax.set_title("Well Trajectory")
+    ax.legend()
+    ax.invert_zaxis()
 
-    return N_vals, E_vals, Z_vals
+    st.pyplot(fig)
 
+    st.success("Trajectory Generated Successfully ✅")
 
-N_plan, E_plan, Z_plan = planned_path(surface, target)
-
-# ---------------- COLOR MAP ----------------
-color_map = {
-    "Vertical": "blue",
-    "Build": "orange",
-    "Hold": "green",
-    "Drop": "red"
-}
-
-# ---------------- 3D PLOT WITH COLORS ----------------
-fig = plt.figure()
-ax = fig.add_subplot(111, projection='3d')
-
-# Plot each section separately
-for sec in df_actual["Section"].unique():
-    subset = df_actual[df_actual["Section"] == sec]
-    ax.plot(subset["Northing"], subset["Easting"], subset["TVD"],
-            label=sec, color=color_map[sec])
-
-# Planned path
-ax.plot(N_plan, E_plan, Z_plan, linestyle='dashed', label="Planned", color="black")
-
-ax.set_xlabel("Northing")
-ax.set_ylabel("Easting")
-ax.set_zlabel("TVD")
-ax.set_title("Well Trajectory (Color-coded Sections)")
-
-ax.legend()
-ax.invert_zaxis()
-
-plt.show()
-
-# ---------------- EXPORT ----------------
-df_actual.to_excel("well_trajectory.xlsx", index=False)
-
-print("\n✅ Survey table saved as: well_trajectory.xlsx")
-print(df_actual.head())
+    st.dataframe(df)
