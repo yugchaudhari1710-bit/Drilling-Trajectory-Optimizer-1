@@ -1,6 +1,6 @@
 def generate_well_trajectory(surface, Vb, target, phi, step=50,
                              trajectory_type="S-Type (Type III)",
-                             drop_rate=None, max_inclination=None):
+                             drop_rate=3.0, max_inclination=45.0):
 
     import math
     import pandas as pd
@@ -8,7 +8,7 @@ def generate_well_trajectory(surface, Vb, target, phi, step=50,
     Na, Ea, Zs = surface
     Nt, Et, Vt = target
 
-    # Basic geometry
+    # ---------------- BASIC GEOMETRY ----------------
     H_t = math.sqrt((Nt - Na)**2 + (Et - Ea)**2)
     beta_rad = math.atan2(Et - Ea, Nt - Na)
     beta_deg = math.degrees(beta_rad)
@@ -18,20 +18,23 @@ def generate_well_trajectory(surface, Vb, target, phi, step=50,
 
     alpha_max_rad = math.radians(max_inclination)
 
-    # ─────────────────────────────────────────────
-    # STEP 1: Build section
-    # ─────────────────────────────────────────────
+    # ---------------- BUILD SECTION ----------------
     MD_kop = Vb
     MD_build = MD_kop + (100.0 * max_inclination / phi)
 
     V_build = R_build * math.sin(alpha_max_rad)
     H_build = R_build * (1 - math.cos(alpha_max_rad))
 
-    # ─────────────────────────────────────────────
-    # STEP 2: Solve final inclination (same as before)
-    # ─────────────────────────────────────────────
+    # ---------------- VALIDATION ----------------
+    if H_t <= H_build:
+        raise ValueError(
+            f"S-Type not feasible: H_t ({H_t:.2f}) <= H_build ({H_build:.2f}). "
+            "Increase horizontal displacement or reduce build rate."
+        )
+
     dV_total = Vt - Zs
 
+    # ---------------- SOLVE FINAL INCLINATION ----------------
     def residual(alpha_final):
         H_drop = R_drop * (math.cos(alpha_final) - math.cos(alpha_max_rad))
         V_drop = R_drop * (math.sin(alpha_max_rad) - math.sin(alpha_final))
@@ -44,7 +47,7 @@ def generate_well_trajectory(surface, Vb, target, phi, step=50,
     low = 1e-6
     high = alpha_max_rad - 1e-6
 
-    for _ in range(80):
+    for _ in range(100):
         mid = 0.5 * (low + high)
         if residual(low) * residual(mid) <= 0:
             high = mid
@@ -53,35 +56,31 @@ def generate_well_trajectory(surface, Vb, target, phi, step=50,
 
     alpha_final = mid
 
-    # ─────────────────────────────────────────────
-    # STEP 3: Compute drop section
-    # ─────────────────────────────────────────────
+    # ---------------- DROP SECTION ----------------
     MD_drop = (100.0 * math.degrees(alpha_max_rad - alpha_final) / drop_rate)
 
-    # ─────────────────────────────────────────────
-    # STEP 4: Solve tangent length (NEW)
-    # ─────────────────────────────────────────────
     H_drop = R_drop * (math.cos(alpha_final) - math.cos(alpha_max_rad))
     V_drop = R_drop * (math.sin(alpha_max_rad) - math.sin(alpha_final))
 
+    # ---------------- REMAINING SECTION ----------------
     H_remaining = H_t - H_build - H_drop
     V_remaining = dV_total - V_build - V_drop
 
-    # tangent + final hold combined
+    if V_remaining <= 0:
+        raise ValueError("Invalid geometry: vertical remaining distance is negative.")
+
     MD_remaining = V_remaining / math.cos(alpha_final)
 
-    # split into tangent + final hold
-    MD_tangent = MD_remaining * 0.4   # adjustable (can optimize later)
-    MD_hold_final = MD_remaining * 0.6
+    # Split into tangent + final hold (simple assumption)
+    MD_tangent = 0.4 * MD_remaining
+    MD_hold_final = 0.6 * MD_remaining
 
-    # Section boundaries
+    # ---------------- SECTION LIMITS ----------------
     MD_tangent_end = MD_build + MD_tangent
     MD_drop_end = MD_tangent_end + MD_drop
     MD_target = MD_drop_end + MD_hold_final
 
-    # ─────────────────────────────────────────────
-    # STEP 5: Walk trajectory
-    # ─────────────────────────────────────────────
+    # ---------------- TRAJECTORY WALK ----------------
     BR = math.radians(phi) / 100.0
     DR = math.radians(drop_rate) / 100.0
 
@@ -142,11 +141,11 @@ def generate_well_trajectory(surface, Vb, target, phi, step=50,
     df = pd.DataFrame(data)
 
     summary = {
-        "H_t": round(H_t, 2),
-        "β": round(beta_deg, 2),
-        "α_max": round(math.degrees(alpha_max_rad), 2),
-        "α_final": round(math.degrees(alpha_final), 2),
-        "MD_target": round(MD_target, 2)
+        "Horizontal Distance (H_t)": round(H_t, 2),
+        "Azimuth (β)": round(beta_deg, 2),
+        "Max Inclination (°)": round(max_inclination, 2),
+        "Final Inclination (°)": round(math.degrees(alpha_final), 2),
+        "Measured Depth (ft)": round(MD_target, 2)
     }
 
     return df, summary
